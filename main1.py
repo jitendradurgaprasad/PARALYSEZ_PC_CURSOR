@@ -10,7 +10,6 @@ screen_w, screen_h = pyautogui.size()
 
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
-    static_image_mode=False,
     max_num_hands=1,
     min_detection_confidence=0.7,
     min_tracking_confidence=0.7
@@ -18,7 +17,7 @@ hands = mp_hands.Hands(
 
 cap = cv2.VideoCapture(0)
 
-dead_zone = 20
+dead_zone = 40
 speed = 15
 edge_margin = 15
 
@@ -28,13 +27,11 @@ calibration_start = None
 calibration_points = []
 neutral_point = None
 
+click_ready = True
 
-def four_fingers_up(landmarks, h):
-    index_up = landmarks[8].y < landmarks[6].y
-    middle_up = landmarks[12].y < landmarks[10].y
-    ring_up = landmarks[16].y < landmarks[14].y
-    pinky_up = landmarks[20].y < landmarks[18].y
-    return index_up and middle_up and ring_up and pinky_up
+
+def pinky_up(landmarks):
+    return landmarks[20].y < landmarks[18].y
 
 
 while True:
@@ -51,18 +48,10 @@ while True:
         hand = result.multi_hand_landmarks[0]
         landmarks = hand.landmark
 
-        index_tip = (
-            int(landmarks[8].x * w),
-            int(landmarks[8].y * h)
-        )
+        index_tip = (int(landmarks[8].x * w),
+                     int(landmarks[8].y * h))
 
-        # -------- RESET CALIBRATION GESTURE --------
-        if four_fingers_up(landmarks, h):
-            calibrated = False
-            calibration_start = time.time()
-            calibration_points = []
-
-        # -------- CALIBRATION MODE --------
+        # -------- CALIBRATION --------
         if not calibrated:
             if calibration_start is None:
                 calibration_start = time.time()
@@ -86,35 +75,68 @@ while True:
                 neutral_point = (avg_x, avg_y)
                 calibrated = True
 
-        # -------- CONTROL MODE --------
+        # -------- CONTROL --------
         else:
             dx = index_tip[0] - neutral_point[0]
             dy = index_tip[1] - neutral_point[1]
 
-            move_x = 0
-            move_y = 0
+            # Draw neutral bounding box
+            top_left = (neutral_point[0] - dead_zone,
+                        neutral_point[1] - dead_zone)
+            bottom_right = (neutral_point[0] + dead_zone,
+                            neutral_point[1] + dead_zone)
 
-            if abs(dx) > dead_zone:
-                move_x = speed if dx > 0 else -speed
+            cv2.rectangle(frame, top_left, bottom_right,
+                          (255, 0, 0), 2)
 
-            if abs(dy) > dead_zone:
-                move_y = speed if dy > 0 else -speed
+            # -------- CLICK MODE --------
+            if pinky_up(landmarks):
 
-            current_x, current_y = pyautogui.position()
+                cv2.putText(frame,
+                            "CLICK MODE",
+                            (30, 80),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.8,
+                            (0, 255, 255),
+                            2)
 
-            new_x = current_x + move_x
-            new_y = current_y + move_y
+                # Cursor paused
 
-            new_x = max(edge_margin, min(screen_w - edge_margin, new_x))
-            new_y = max(edge_margin, min(screen_h - edge_margin, new_y))
+                # If index moves downward beyond box
+                if dy > dead_zone and click_ready:
+                    pyautogui.click()
+                    click_ready = False
 
-            pyautogui.moveTo(new_x, new_y)
+                # Reset click readiness when finger returns to neutral
+                if abs(dy) < dead_zone:
+                    click_ready = True
+
+            # -------- MOVEMENT MODE --------
+            else:
+                move_x = 0
+                move_y = 0
+
+                if abs(dx) > dead_zone:
+                    move_x = speed if dx > 0 else -speed
+
+                if abs(dy) > dead_zone:
+                    move_y = speed if dy > 0 else -speed
+
+                current_x, current_y = pyautogui.position()
+
+                new_x = current_x + move_x
+                new_y = current_y + move_y
+
+                new_x = max(edge_margin, min(screen_w - edge_margin, new_x))
+                new_y = max(edge_margin, min(screen_h - edge_margin, new_y))
+
+                pyautogui.moveTo(new_x, new_y)
 
             cv2.circle(frame, neutral_point, 8, (0, 255, 0), -1)
 
         cv2.circle(frame, index_tip, 8, (0, 0, 255), -1)
 
-    cv2.imshow("Adaptive Finger Cursor Control", frame)
+    cv2.imshow("Finger Cursor Control", frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
