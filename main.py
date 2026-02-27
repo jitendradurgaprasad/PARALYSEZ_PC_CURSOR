@@ -1,206 +1,171 @@
-# Import OpenCV for camera access and image processing
 import cv2
-
-# Import MediaPipe for hand tracking
 import mediapipe as mp
-
-# Import PyAutoGUI to control mouse cursor
 import pyautogui
-
-# Import time module for calibration timing
 import time
 
-
-# This enables safety feature:
-# If mouse moves to top-left corner, program stops automatically
-pyautogui.FAILSAFE = True
-
-
-# Get screen resolution of the laptop
+pyautogui.FAILSAFE = False
 screen_w, screen_h = pyautogui.size()
 
-
-# Initialize MediaPipe Hands module
 mp_hands = mp.solutions.hands
-
-# Configure hand tracking parameters
 hands = mp_hands.Hands(
-    static_image_mode=False,        # False means continuous video tracking
-    max_num_hands=1,                # Detect only one hand
-    min_detection_confidence=0.7,   # Minimum confidence to detect hand
-    min_tracking_confidence=0.7     # Minimum confidence to continue tracking
+    static_image_mode=False,
+    max_num_hands=1,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.7
 )
 
-# Utility to draw hand landmarks on screen
-mp_draw = mp.solutions.drawing_utils
-
-
-# Open laptop camera (0 means default webcam)
 cap = cv2.VideoCapture(0)
 
 
-# These variables store center (neutral) position after calibration
+# Calibration
 neutral_x = None
 neutral_y = None
-
-# Dead zone size around neutral position
 dead_zone = 30
-
-# Boolean to check if calibration is completed
 calibrated = False
-
-# Stores starting time of calibration
 calibration_start = None
 
+# Smooth movement
+acceleration = 0.30
+max_speed = 80
+smooth_factor = 0.7
 
-# Speed control variables
-acceleration = 0.14     # Sensitivity of cursor movement
-max_speed = 40        # Maximum allowed cursor speed per frame
+prev_dx = 0
+prev_dy = 0
+
+# Cooldowns
+scroll_cooldown = 0.4
+click_cooldown = 0.4
+last_scroll_time = 0
+last_click_time = 0
 
 
-# Function to check if all four fingers are up (used for recalibration)
 def all_fingers_up(hand_landmarks):
-    tips = [8, 12, 16, 20]  # Index, middle, ring, pinky tips
+    tips = [8, 12, 16, 20]
     count = 0
-
     for tip in tips:
-        # If fingertip is above its lower joint → finger is up
         if hand_landmarks.landmark[tip].y < hand_landmarks.landmark[tip - 2].y:
             count += 1
-
     return count == 4
 
 
+def pinky_up(hand_landmarks):
+    return hand_landmarks.landmark[20].y < hand_landmarks.landmark[18].y
 
-# Main loop runs continuously
+
 while True:
 
-    # Read frame from camera
     success, frame = cap.read()
-
     if not success:
         break
 
-    # Flip image horizontally (mirror effect)
     frame = cv2.flip(frame, 1)
-
-    # Get frame height and width
     h, w, _ = frame.shape
 
-
-    # Convert image from BGR to RGB (MediaPipe requires RGB)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    # Process frame to detect hands/
     results = hands.process(rgb)
 
-
-    # If hand is detected
     if results.multi_hand_landmarks:
-
 
         for hand_landmarks in results.multi_hand_landmarks:
 
-            # Draw hand skeleton on screen
-            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-
-            # Get index finger tip (landmark 8)
             index_tip = hand_landmarks.landmark[8]
+            pinky_tip = hand_landmarks.landmark[20]
 
-            # Convert normalized coordinates (0–1) to pixel coordinates
             x = int(index_tip.x * w)
             y = int(index_tip.y * h)
 
+            # ---- DRAW ONLY INDEX + PINKY ----
+            cv2.circle(frame, (x, y), 8, (0, 255, 0), -1)
+            cv2.circle(frame,
+                       (int(pinky_tip.x * w), int(pinky_tip.y * h)),
+                       8, (255, 0, 0), -1)
 
-            # ---------------- CALIBRATION PHASE ----------------
+            # ---------------- CALIBRATION ----------------
             if not calibrated:
 
-                # Start timer if not started
                 if calibration_start is None:
                     calibration_start = time.time()
 
-                # Calculate elapsed time
                 elapsed = time.time() - calibration_start
                 remaining = int(5 - elapsed)
 
-                # Show countdown on screen
                 cv2.putText(frame, f"Calibrating: {remaining}",
-                            (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
+                            (50, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX,
                             1, (0, 0, 255), 2)
 
-                # After 5 seconds, set neutral position
                 if elapsed >= 5:
                     neutral_x = x
                     neutral_y = y
                     calibrated = True
-                    print("Calibration Complete")
 
                 continue
 
-
-            # ---------------- RECALIBRATION ----------------
+            # Recalibration
             if all_fingers_up(hand_landmarks):
-
-                # Reset everything
                 calibrated = False
                 calibration_start = None
                 neutral_x = None
                 neutral_y = None
-
-                print("Recalibration Triggered")
                 continue
 
-
-            # ---------------- DRAW DEAD ZONE ----------------
+            # Draw dead zone
             cv2.rectangle(frame,
                           (neutral_x - dead_zone, neutral_y - dead_zone),
                           (neutral_x + dead_zone, neutral_y + dead_zone),
                           (0, 255, 0), 2)
 
+            current_time = time.time()
 
-            # ---------------- AXIAL OVERFLOW ----------------
-            if x > neutral_x + dead_zone:
-                overflow_x = x - (neutral_x + dead_zone)
-            elif x < neutral_x - dead_zone:
-                overflow_x = x - (neutral_x - dead_zone)
-            else:
-                overflow_x = 0
+            # ---------------- ACTION MODE ----------------
+            if pinky_up(hand_landmarks):
 
-            if y > neutral_y + dead_zone:
-                overflow_y = y - (neutral_y + dead_zone)
-            elif y < neutral_y - dead_zone:
-                overflow_y = y - (neutral_y - dead_zone)
-            else:
-                overflow_y = 0
+                # BELOW box → LEFT CLICK
+                if y > neutral_y + dead_zone and (current_time - last_click_time > click_cooldown):
+                    pyautogui.click(button='left')
+                    last_click_time = current_time
 
+                # ABOVE box → RIGHT CLICK
+                elif y < neutral_y - dead_zone and (current_time - last_click_time > click_cooldown):
+                    pyautogui.click(button='right')
+                    last_click_time = current_time
 
-            # ---------------- SPEED SCALING ----------------
+                # CROSS LEFT → SCROLL UP
+                elif x < neutral_x - dead_zone and (current_time - last_scroll_time > scroll_cooldown):
+                    pyautogui.scroll(200)
+                    last_scroll_time = current_time
+
+                # CROSS RIGHT → SCROLL DOWN
+                elif x > neutral_x + dead_zone and (current_time - last_scroll_time > scroll_cooldown):
+                    pyautogui.scroll(-200)
+                    last_scroll_time = current_time
+
+                continue
+
+            # ---------------- NORMAL CURSOR MODE ----------------
+            overflow_x = x - neutral_x
+            overflow_y = y - neutral_y
+
             dx = overflow_x * acceleration
             dy = overflow_y * acceleration
 
-            # Limit maximum speed
             dx = max(min(dx, max_speed), -max_speed)
             dy = max(min(dy, max_speed), -max_speed)
 
-            # Get current mouse position
-            current_mouse_x, current_mouse_y = pyautogui.position()
+            # Smooth movement using weighted averaging
+            dx = smooth_factor * prev_dx + (1 - smooth_factor) * dx
+            dy = smooth_factor * prev_dy + (1 - smooth_factor) * dy
 
-            # Add movement
-            new_x = current_mouse_x + dx
-            new_y = current_mouse_y + dy
+            prev_dx = dx
+            prev_dy = dy
 
-            # Move cursor
-            pyautogui.moveTo(new_x, new_y)
+            mouse_x, mouse_y = pyautogui.position()
+            pyautogui.moveTo(mouse_x + dx, mouse_y + dy)
 
-
-    # Show camera window
     cv2.imshow("Axial Finger Mouse", frame)
 
-    # Exit when ESC key is pressed
     if cv2.waitKey(1) & 0xFF == 27:
         break
 
-
-# Release camera and close windows
 cap.release()
 cv2.destroyAllWindows()
