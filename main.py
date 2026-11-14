@@ -183,7 +183,6 @@ def run(mode: str, camera_index: int) -> None:
                     right_eye = abs(landmarks.landmark[386].y - landmarks.landmark[374].y)
                     mouth = abs(landmarks.landmark[13].y - landmarks.landmark[14].y)
                     scroll_mode = mouth > 0.06
-                    gesture_mode = True
                     if scroll_mode:
                         action = "Scroll mode: close left eye up / right eye down"
                         if left_eye < 0.015 and now - last_scroll >= SCROLL_COOLDOWN:
